@@ -1,2 +1,3 @@
 # R_projects
-more projects done with R
+
+Some projects I worked on using R.
