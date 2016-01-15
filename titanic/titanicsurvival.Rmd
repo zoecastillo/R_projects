@@ -1,0 +1,171 @@
+---
+title: "Titanic Survival"
+output: html_document
+---
+
+```{r packages, include=FALSE}
+library(knitr)
+library(dplyr)
+library(ggplot2)
+library(caret)
+library(randomForest)
+library(rpart)
+opts_chunk$set(echo=TRUE)
+```
+
+##Problem Description: Titanic - Machine Learning from Disaster
+
+The dataset contains information on passengers of the RMS Titanic which sank in 1912 after colliding with an iceberg. Around 2/3 of the people onboard were killed with groups of people, such as women, children or upper-class, having a much higher rate of survival than others. The aim of the challenge is to most accurately predict for each passenger whether the passenger survived or not.  
+The data is comprised of fields to identify each passenger by name and id as well as his/her gender, age, travel class, number of family relations on board, cabin number and travel details such as fare, embarkation port and ticket number. The training set also has a value of 1 if the passenger survived or 0 if he/she didn't. This value is missing in the test set and the percentage of correct predictions of this value is used as the measure of quality for the analysis.
+
+```{r loading}
+# Loading and processing the data set
+passengers <- read.csv("train.csv")
+passengers$Name <- as.character(passengers$Name)
+passengers$Pclass <- as.factor(passengers$Pclass)
+drops <- c("Name","Ticket","Embarked")
+passengers <- passengers[,!(names(passengers) %in% drops)]
+```
+
+I decided to immediately drop the information on Name, Ticket number and place of Embarkation. It doesn't seem logical to me that these would provide any helpful input to the analysis.
+
+##Exploration of the data
+
+Overview of survival based on sex, age and class
+```{r exploration, fig.height=2, fig.width=10}
+table(passengers$Sex,passengers$Survived)
+qplot(Age, Survived, data=passengers, alpha=I(0.3), color=passengers$Sex)
+qplot(Age, Survived, data=passengers, alpha=I(0.3), color=passengers$Pclass,
+      pch=passengers$Sex)
+```
+
+Based on the initial exploration, it appears that most adult men died while most adult women survived. Most children of class 1 or 2 seem to have survived and very few passengers of class 1 that were younger than 45 died.
+As a first approach to analysing the problem, I've decided to set up a rule based system following these observation:
+
+1. If the passenger is male 
+    - and older than 16 or class 3, he died
+    - else he survived
+2. If the passenger is female
+    - and younger than 10 and class 3, she died
+    - else she survived
+
+Since roughly 20% of the Age values are missing, it might be interesting to see the relationship between missing Age value and survival:
+
+```{r missingvalues}
+hist(passengers$Survived[which(is.na(passengers$Age))], main="Survival without given Age", xlab="survival")
+
+```
+
+As it is more likely that Age data was missing for passengers of class 3, it makes sense for a simple approach to just replace it with an arbitrary adult age. About 2/3 of people missing age died and it is likely that ones that did survive were adult women.
+
+```{r survivalrules}
+#replace NA values for this analysis
+nonapassengers <- passengers
+nonapassengers$Age[which(is.na(passengers$Age))] <- 20
+
+#helper function for rules
+survivalbyrules <- function(x){
+    if(x['Sex'] == "male"){
+        if(x['Age'] > 16 | x['Pclass'] == 3) 
+            return (0);
+    }
+    else if(x['Sex'] == "female"){
+        if(x['Age'] <= 10 & x['Pclass'] == 3)
+            return (0);
+    }
+    return (1);
+}
+
+#making predictions based on rules
+nonapassengers$PredictedSurvival <- apply(nonapassengers,1,survivalbyrules)
+
+confusionMatrix(table(nonapassengers$Survived,
+                      nonapassengers$PredictedSurvival))
+```
+
+The prediction accuracy of this approach is 79.9% which turns out to give a surprisingly good result given that it's based on a very small and simple set of rules. Obviously, most problems follow a simple logic that can easily be grasped from a few two-dimensional plots and furthermore, there is still an error rate of slightly more than 20%. So, there's definitely room for improvement. I think incorporating the information on family relationships might help to make a better prediction.
+
+
+#### Rpart
+```{r rpart}
+
+set.seed(111)
+
+#partitinioning the training data
+inT <- createDataPartition(passengers$PassengerId,times=1,p=0.8, list=FALSE)
+passengersTrain <- nonapassengers[inT,]
+passengersTest <- passengers[-inT,]
+
+#model and prediction based on rpart function
+modelrpart <- rpart(formula(Survived ~ Pclass + Sex + Age + SibSp 
+                            + Parch + Fare), 
+                    method="class",data=passengersTrain)
+
+print(modelrpart)
+predsurvrpart <- predict(modelrpart,passengersTest)
+predsurvrpart <- max.col(predsurvrpart)
+predsurvrpart <- predsurvrpart - 1
+confusionMatrix(table(passengersTest$Survived,predsurvrpart))
+
+```
+
+
+
+#### Random Forest
+```{r randomforest}
+
+#partitinioning the training data using the data with imputed Age values
+passengersTrain <- nonapassengers[inT,]
+
+#model and prediction based on rpart function
+modelforest <- randomForest(formula(as.factor(Survived) ~ Pclass + Sex + Age 
+                                    + SibSp + Parch), data=passengersTrain)
+
+predsurvforest <- predict(modelforest,passengersTest)
+predsurvforest[which(is.na(predsurvforest))] <- 0
+confusionMatrix(table(passengersTest$Survived,predsurvforest))
+
+```
+
+
+
+```{r randomforest2}
+
+
+#model and prediction based on rpart function
+modelforest2 <- randomForest(formula(as.factor(Survived) ~ Pclass + Sex + Age 
+                                     + SibSp + Fare), 
+               data=passengersTrain)
+
+predsurvforest2 <- predict(modelforest2,passengersTest)
+predsurvforest2[which(is.na(predsurvforest2))] <- 0
+confusionMatrix(table(passengersTest$Survived,predsurvforest2))
+
+```
+
+Of all the more sophisticated approaches that I tried, the one using rpart to figure out the internal rule system gives the best result at around 85%. The rules show that both the Fare and the relationship to siblings or spouses on board also play a significant role when determining survival.
+For boys, having fewer siblings led to improved chances of survival which seems logical. For women in class 3, the decision is very finely tuned to different Fare categories which might indicate a problem with overfitting. 
+
+##Training best method on the full dataset and given test set
+
+```{r applyingmodel}
+#parsing test dataset
+testset <- read.csv("test.csv")
+testset$Name <- as.character(testset$Name)
+testset$Pclass <- as.factor(testset$Pclass)
+drops <- c("Name","Ticket","Embarked")
+testset <- testset[,!(names(testset) %in% drops)]
+#model and prediction based on rpart function
+modelfinal <- rpart(formula(Survived ~ Pclass + Sex + Age + SibSp 
+                            + Fare ), 
+                    method="class",data=passengers)
+
+print(modelfinal)
+Survived <- predict(modelfinal,testset)
+Survived <- max.col(Survived)
+Survived <- Survived - 1
+testset <- cbind(testset,Survived)
+keep <- c("PassengerId","Survived")
+testoutput <- testset[,keep]
+write.csv(testoutput,file="prediction3.csv",row.names = FALSE, quote = FALSE)
+```

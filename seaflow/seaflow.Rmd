@@ -1,0 +1,84 @@
+#Sea Flow analysis
+The goal of the assignemt was to work with data from the SeaFlow environmental flow cytometry instrument employing different classification techniques.
+
+A flow cytometer delivers a flow of particles through capilliary. By shining lasers of different wavelengths and measuring the absorption and refraction patterns, you can determine how large the particle is and some information about its color and other properties, allowing you to detect it.
+
+```{r setoptions, include=FALSE}
+library(knitr)
+library(ggplot2)
+library(caret)
+library(rpart)
+library(randomForest)
+library(e1071)
+opts_chunk$set(echo=TRUE)
+```
+
+```{r gettingdata}
+ocean <- read.csv("seaflow_21min.csv")
+summary(ocean)
+
+
+testout<- createDataPartition(ocean$cell_id,list=FALSE)
+trainData <- ocean[testout,]
+testData <- ocean[-testout,]
+givenlabels = as.vector(testData[,12])
+```
+
+###Plot showing some of the particles
+```{r}
+g <- ggplot(ocean, aes(pe,chl_small))
+g + geom_point(aes(color=pop))
+```
+
+###Figuring out a rule system using rpart
+```{r}
+fol <- formula(pop ~ fsc_small + fsc_perp + fsc_big + pe + chl_big + chl_small)
+mpart <- rpart(fol,method="class", data=trainData)
+print(mpart)
+
+predrpart <- predict(mpart,testData)
+getlabels <- function(x){ names(which.max(x))}
+labelsrpart <- as.vector(apply(predrpart, 1, getlabels))
+cmprpart <- givenlabels == labelsrpart
+sum(as.numeric(cmprpart))/36171
+```
+
+###Classification with random forests
+```{r}
+mforest <- randomForest(fol,data=trainData)
+predforest <- predict(mforest,testData)
+labelsforest <- as.vector(predforest)
+cmpforest <- givenlabels == labelsforest
+sum(as.numeric(cmpforest))/36171
+importance(mforest)
+```
+
+###classification with svms
+```{r}
+msvm <- svm(fol,data=trainData)
+predsvm <- predict(msvm,testData)
+labelssvm <- as.vector(predsvm)
+cmpsvm <- givenlabels == labelssvm
+sum(as.numeric(cmpsvm))/36171
+```
+
+###Result overview
+```{r}
+table(true=givenlabels,pred=labelsrpart)
+table(true=givenlabels,pred=labelsforest)
+table(true=givenlabels,pred=labelssvm)
+```
+
+###Inconsistency of some data over time
+```{r}
+par(mfcol=c(3,3), mar=c(2,2,2,1) + 0.1)
+with(ocean,{
+    plot(time,fsc_small)
+    plot(time,fsc_perp)
+    plot(time,fsc_big)
+    plot(time,pe)
+    plot(time,chl_small)
+    plot(time,chl_big)
+})
+
+```
